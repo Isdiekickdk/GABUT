@@ -1,0 +1,212 @@
+-- Universal Aimbot + ESP Box & Health-Bar (KRNL)
+-- langsung Copy-Paste → Execute
+--------------------------------------------------
+local P   = game:GetService("Players")
+local R   = game:GetService("RunService")
+local C   = workspace.CurrentCamera
+local LP  = P.LocalPlayer
+
+local set = {
+	FOV      = 120,
+	Smooth   = 0.7,
+	ESP      = {
+		Enabled   = true,
+		Box       = true,
+		HealthBar = true,
+		OffsetY   = 4,      -- jarak box atas dari kepala
+		HeightAdd = 2       -- tambahan tinggi box (bawah)
+	}
+}
+
+--------------------------------------------------
+-- Drawing objects pool
+local espCache = {}   -- [player] = {box, healthBg, healthBar, txtName}
+
+local function newDrawing(typ, prop)
+	local d = Drawing.new(typ)
+	for k,v in pairs(prop) do d[k] = v end
+	return d
+end
+
+local function rgb()
+	return Color3.fromHSV((tick() % 5) / 5, 1, 1)
+end
+
+--------------------------------------------------
+-- TEAM CHECK (sudah ada)
+local function sameTeam(p)
+	local myTeam  = LP.Team and LP.Team.Name
+	local hisTeam = p.Team and p.Team.Name
+	if myTeam and hisTeam then return (myTeam == hisTeam) end
+	local myChr  = LP.Character
+	local hisChr = p.Character
+	if myChr and hisChr then
+		local myCol  = (myChr:FindFirstChild("TeamColor") or myChr:FindFirstChild("Role"))
+		local hisCol = (hisChr:FindFirstChild("TeamColor") or hisChr:FindFirstChild("Role"))
+		if myCol and hisCol and myCol.Value == hisCol.Value then return true end
+	end
+	myTeam  = string.lower(myTeam or "")
+	hisTeam = string.lower(hisTeam or "")
+	local mySide  = string.match(myTeam, "blue") and "blue" or string.match(myTeam, "red") and "red"
+	local hisSide = string.match(hisTeam, "blue") and "blue" or string.match(hisTeam, "red") and "red"
+	return mySide and hisSide and mySide == hisSide
+end
+
+local function isDead(character)
+	if not character then return true end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	return not humanoid or humanoid.Health <= 0
+end
+
+--------------------------------------------------
+-- VISIBILITY CHECK (raycast)
+local function visible(part)
+	local origin    = C.CFrame.Position
+	local dest      = part.Position
+	local direction = (dest - origin).Unit
+	local distance  = (dest - origin).Magnitude
+
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+	local filterList = {LP.Character, C, workspace:FindFirstChild("Terrain")}
+	for _, plr in ipairs(P:GetPlayers()) do
+		if plr.Character then table.insert(filterList, plr.Character) end
+	end
+	rayParams.FilterDescendantsInstances = filterList
+	rayParams.IgnoreWater = true
+	return workspace:Raycast(origin, direction * distance, rayParams) == nil
+end
+
+--------------------------------------------------
+-- AIMBOT LOGIC
+local fov = newDrawing("Circle",{
+	Thickness = 1, NumSides = 100, Radius = set.FOV,
+	Filled = false, Visible = true
+})
+
+local function getTarget()
+	local n, d = nil, set.FOV
+	for _, p in ipairs(P:GetPlayers()) do
+		if p == LP or sameTeam(p) then continue end
+		local char = p.Character
+		if not char or isDead(char) then continue end
+		local part = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+		if not part then continue end
+		local s, on = C:WorldToViewportPoint(part.Position)
+		if not on then continue end
+		local m = (Vector2.new(s.X, s.Y) - C.ViewportSize / 2).Magnitude
+		if m >= d or not visible(part) then continue end
+		n, d = part, m
+	end
+	return n
+end
+
+--------------------------------------------------
+-- ESP FUNCTIONS
+local function removeESP(p)
+	if espCache[p] then
+		for _, v in pairs(espCache[p]) do v:Remove() end
+		espCache[p] = nil
+	end
+end
+
+local function createESP(p)
+	removeESP(p)
+	espCache[p] = {
+		box       = newDrawing("Square",{Thickness=1,Filled=false}),
+		healthBg  = newDrawing("Square",{Thickness=1,Filled=true,Color=Color3.new(0,0,0),Transparency=0.5}),
+		healthBar = newDrawing("Square",{Thickness=1,Filled=true,Color=Color3.new(0,1,0)}),
+		txtName   = newDrawing("Text",{Size=18,Center=true,Outline=true,Color=Color3.new(1,1,1)})
+	}
+end
+
+local function updateESP()
+	if not set.ESP.Enabled then return end
+	for _, p in ipairs(P:GetPlayers()) do
+		if p == LP or sameTeam(p) then removeESP(p); continue end
+		local char = p.Character
+		if not char or isDead(char) then removeESP(p); continue end
+
+		local head = char:FindFirstChild("Head")
+		if not head then removeESP(p); continue end
+
+		if not espCache[p] then createESP(p) end
+		local t = espCache[p]
+
+		local pos, onScreen = C:WorldToViewportPoint(head.Position + Vector3.new(0, set.ESP.OffsetY, 0))
+		if not onScreen then
+			for _, v in pairs(t) do v.Visible = false end
+			continue
+		end
+
+		local scale = head.Size.Y * 1.2
+		local width  = scale * 1.6
+		local height = scale * 2 + set.ESP.HeightAdd
+
+		local topLeft = Vector2.new(pos.X - width/2, pos.Y)
+		local bottomRight = Vector2.new(pos.X + width/2, pos.Y + height)
+
+		-- BOX
+		if set.ESP.Box then
+			t.box.Visible = true
+			t.box.Position = topLeft
+			t.box.Size     = Vector2.new(width, height)
+			t.box.Color    = rgb()
+		else
+			t.box.Visible = false
+		end
+
+		-- HEALTH BAR
+		if set.ESP.HealthBar then
+			local humanoid = char:FindFirstChildOfClass("Humanoid")
+			local hp = humanoid and humanoid.Health or 0
+			local maxHp = humanoid and humanoid.MaxHealth or 100
+			local ratio = math.clamp(hp / maxHp, 0, 1)
+
+			local barWidth = 3
+			local barHeight = height
+			local barX = topLeft.X - barWidth - 2
+			local barY = topLeft.Y
+
+			t.healthBg.Visible = true
+			t.healthBg.Position = Vector2.new(barX, barY)
+			t.healthBg.Size     = Vector2.new(barWidth, barHeight)
+
+			t.healthBar.Visible = true
+			t.healthBar.Position = Vector2.new(barX, barY + barHeight * (1 - ratio))
+			t.healthBar.Size     = Vector2.new(barWidth, barHeight * ratio)
+			t.healthBar.Color    = Color3.fromRGB(255 * (1 - ratio), 255 * ratio, 0)
+		else
+			t.healthBg.Visible  = false
+			t.healthBar.Visible = false
+		end
+
+		-- NAME
+		t.txtName.Visible = true
+		t.txtName.Text = p.Name
+		t.txtName.Position = Vector2.new(pos.X, topLeft.Y - 18)
+	end
+end
+
+--------------------------------------------------
+-- LOOPS
+R.RenderStepped:Connect(function()
+	-- FOV
+	fov.Position = C.ViewportSize / 2
+	fov.Radius   = set.FOV
+	fov.Color    = rgb()
+
+	-- AIMBOT
+	local target = getTarget()
+	if target then
+		local dir = (target.Position - C.CFrame.Position).Unit
+		local aim = CFrame.new(C.CFrame.Position, C.CFrame.Position + dir)
+		C.CFrame  = C.CFrame:Lerp(aim, set.Smooth)
+	end
+
+	-- ESP
+	updateESP()
+end)
+
+-- Bersihkan ESP saat player leave
+P.PlayerRemoving:Connect(removeESP)
